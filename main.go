@@ -1,75 +1,75 @@
-// Sample trace_quickstart traces incoming and outgoing requests.
+// Copyright 2020 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// The trace command is an example of setting up OpenTelemetry to export traces to Google
+// Cloud Trace.
 package main
 
+// [START opentelemetry_trace_import]
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
-	"contrib.go.opencensus.io/exporter/stackdriver"
-	"contrib.go.opencensus.io/exporter/stackdriver/propagation"
-	"go.opencensus.io/plugin/ochttp"
-	"go.opencensus.io/trace"
+	texporter "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace"
+	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
+// [END opentelemetry_trace_import]
+// [START opentelemetry_trace_main_function]
 func main() {
-	// Create and register a OpenCensus Stackdriver Trace exporter.
-	exporter, err := stackdriver.NewExporter(stackdriver.Options{
-		ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
-	})
+	// Create exporter.
+	ctx := context.Background()
+	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
+	exporter, err := texporter.NewExporter(texporter.WithProjectID(projectID))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("texporter.NewExporter: %v", err)
 	}
-	trace.RegisterExporter(exporter)
 
-	// By default, traces will be sampled relatively rarely. To change the
-	// sampling frequency for your entire program, call ApplyConfig. Use a
-	// ProbabilitySampler to sample a subset of traces, or use AlwaysSample to
-	// collect a trace on every run.
+	// Create trace provider with the exporter.
 	//
-	// Be careful about using trace.AlwaysSample in a production application
-	// with significant traffic: a new trace will be started and exported for
-	// every request.
-	trace.ApplyConfig(trace.Config{DefaultSampler: trace.AlwaysSample()})
+	// By default it uses AlwaysSample() which samples all traces.
+	// In a production environment or high QPS setup please use
+	// probabilistic sampling.
+	// Example:
+	//   tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.TraceIDRatioBased(0.0001)), ...)
+	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter))
+	defer tp.ForceFlush(ctx) // flushes any pending spans
+	otel.SetTracerProvider(tp)
 
-	client := &http.Client{
-		Transport: &ochttp.Transport{
-			// Use Google Cloud propagation format.
-			Propagation: &propagation.HTTPFormat{},
-		},
-	}
+	// [START opentelemetry_trace_custom_span]
+	// Create custom span.
+	g := gin.Default()
+	tracer := otel.GetTracerProvider().Tracer("main")
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		req, _ := http.NewRequest("GET", "https://www.google.com", nil)
-		log.Println("/foo")
+	g.GET("/", func(c *gin.Context) {
+		err = func(ctx context.Context) error {
+			_, span := tracer.Start(ctx, "foo")
+			defer span.End()
+			waitTime := 100
+			time.Sleep(time.Millisecond * time.Duration(waitTime))
+			c.JSON(http.StatusOK, gin.H{"wait": waitTime})
+			return nil
+		}(ctx)
 
-		// The trace ID from the incoming request will be
-		// propagated to the outgoing request.
-		req = req.WithContext(r.Context())
-
-		// The outgoing request will be traced with r's trace ID.
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Fatal(err)
-		}
-		// Because we don't read the resp.Body, need to manually call Close().
-		resp.Body.Close()
 	})
-	http.Handle("/", handler)
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-	log.Printf("Listening on port %s", port)
-
-	// Use an ochttp.Handler in order to instrument OpenCensus for incoming
-	// requests.
-	httpHandler := &ochttp.Handler{
-		// Use the Google Cloud propagation format.
-		Propagation: &propagation.HTTPFormat{},
-	}
-	if err := http.ListenAndServe(":"+port, httpHandler); err != nil {
-		log.Fatal(err)
-	}
+	g.Run(":8085")
+	// [END opentelemetry_trace_custom_span]
 }
+
+// [END opentelemetry_trace_main_function]
