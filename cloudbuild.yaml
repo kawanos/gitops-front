@@ -1,0 +1,42 @@
+steps:
+# This step builds the container image.
+- name: 'gcr.io/cloud-builders/docker'
+  id: Build
+  args:
+  - 'build'
+  - '-t'
+  - 'gcr.io/$PROJECT_ID/gitops-front:$SHORT_SHA'
+  - '.'
+
+# This step pushes the image to Container Registry
+# The PROJECT_ID and SHORT_SHA variables are automatically
+# replaced by Cloud Build.
+- name: 'gcr.io/cloud-builders/docker'
+  id: Push
+  args:
+  - 'push'
+  - 'gcr.io/$PROJECT_ID/gitops-front:$SHORT_SHA'
+
+- name: 'gcr.io/cloud-builders/gcloud'
+  id: Create manifest
+  entrypoint: /bin/sh
+  args:
+    - '-c'
+    - |
+      git config --global user.email shingo.test@55mp.com
+      git config --global user.name shingo
+      git clone https://$$TOKEN@github.com/kawanos/gitops-front.git && \
+      cd gitops-front && \
+      git checkout dev && \
+      cat deployment.yaml.tpl | sed -e "s/SHORT_SHA/${SHORT_SHA}/" | sed -e "s/PROJECT_ID/${PROJECT_ID}/" > deployment.yaml
+      git diff
+      git add .
+      git commit -va -m "Update of GitOps"
+      git push origin dev -u
+
+  secretEnv: ['TOKEN']
+availableSecrets:
+  secretManager: 
+  - versionName: projects/979620584367/secrets/test-token/versions/3
+  # - versionName: projects/749198984725/secrets/test-token/versions/3
+    env: TOKEN
